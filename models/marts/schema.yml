@@ -1,0 +1,41 @@
+version: 2
+
+models:
+  - name: dim_companies
+    description: "Dimension des pages LinkedIn (entreprise). Contient uniquement les colonnes disponibles dans le staging de base."
+    columns:
+      - name: organization_id
+        description: "Clé Primaire (PK) de l'organisation. Clé d'unicité et de non-nullité."
+        tests:
+          - unique
+          - not_null
+      - name: company_name
+        description: "Nom de l'entreprise sur LinkedIn, renommé à partir de organization_name."
+        tests:
+          - not_null
+
+  - name: fact_share_statistics 
+    description: "Métriques quotidiennes d'engagement des publications, agrégées par jour (grain)."
+    columns:
+      - name: post_id 
+        description: "Clé Primaire (PK) de la publication LinkedIn (renommé de post_url)."
+        tests:
+          - unique
+          - not_null
+      - name: organization_id
+        description: "Clé Étrangère (FK) vers dim_companies."
+        tests:
+          - not_null
+          - relationships: 
+              to: ref('dim_companies')
+              field: organization_id # Lie la table de faits à la dimension
+      - name: date_day
+        description: "Date d'agrégation des statistiques (grain quotidien)."
+        tests:
+          - not_null
+      - name: impression_count
+        description: "Nombre total d'impressions."
+        tests:
+          - not_null
+      - name: engagement_rate
+        description: "Taux d'engagement calculé (Interactions / Impressions)."

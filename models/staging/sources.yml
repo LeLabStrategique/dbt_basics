@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: fivetran_linkedin
+    # L'erreur venait d'ici, remplaçons la variable d'env. par la valeur statique
+    database: dbt-bq-training-473915
+    schema: linkedin_company_pages # Ce nom est déjà correct
+
+    loader: Fivetran
+    loaded_at_field: "_fivetran_synced"
+    
+    tables:
+      - name: share_statistic
+        # Nous ajouterons les tests de fraîcheur plus tard
+        
+      - name: ugc_post
+      
+      - name: organization

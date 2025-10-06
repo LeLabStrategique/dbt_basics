@@ -1,0 +1,22 @@
+version: 2
+
+sources:
+  - name: linkedin_company_pages
+    database: dbt-bq-training-473915 # Votre Project ID
+    schema: linkedin_company_pages # Le Dataset brut Fivetran
+
+    tables:
+      - name: account_history
+      - name: creative_history
+      - name: campaign_group
+      - name: campaign
+      - name: ad_creative
+      - name: ad_context_dsc
+      - name: ugc_post
+      - name: ugc_post_history
+      - name: ugc_post_share_statistic
+      - name: post_share_statistic
+      - name: page_view
+      - name: follower_statistic
+      - name: company_page_history
+      - name: organization_entity_history
