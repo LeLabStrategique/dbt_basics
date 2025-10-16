@@ -2,6 +2,7 @@
     config(
         materialized='incremental',
         unique_key='row_id',
+        incremental_strategy='merge',
         on_schema_change='fail'
     )
 }}
@@ -9,53 +10,71 @@
 WITH source_data AS (
 
     SELECT
-        f.*,
-        -- Jointure sur la colonne 'name' de la dimension 'industry'
-        d.name AS industry_name_enriched,
+        -- Colonnes brutes nécessaires (pour la structure et les faits)
+        f._organization_entity_urn,
+        f.industry_id, -- Clé de la dimension (ID de l'industrie)
+        f.follower_counts_organic_follower_count,
+        f.follower_counts_paid_follower_count,
+        f._fivetran_synced, -- Pour l'incrémentalité et le timestamp
         
-        -- Crée la clé analytique (row_id)
-        CONCAT(
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            -- Utilise la colonne 'name' pour le COALESCE, sinon la clé f.industry_id
-            COALESCE(d.name, CAST(f.industry_id AS STRING)) 
-        ) AS row_id,
+        -- Colonne de dimension enrichie (nom de l'industrie)
+        d.name AS dim_industry_name_enriched,
         
-        -- Clé de traçabilité Fivetran
-        CONCAT(CAST(f._fivetran_id AS STRING), '§', CAST(TIMESTAMP(f._fivetran_synced) AS STRING)) AS dedup_key
+        -- Colonnes calculées/renommées
+        TIMESTAMP(f._fivetran_synced) AS extract_timestamp_temp, 
+        CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYY-MM-DD') AS day_format
         
     FROM 
         -- Source de faits
         {{ source('fivetran_linkedin', 'followers_by_industry') }} AS f
         
     LEFT JOIN
-        -- Source de dimension
+        -- Source de dimension (pour enrichir l'ID d'industrie)
         {{ source('fivetran_linkedin', 'industry') }} AS d
-        -- Jointure basée sur l'ID de l'industrie
         ON CAST(d.id AS STRING) = CAST(f.industry_id AS STRING)
         
     -- FILTRE D'OPTIMISATION (Incrémentalité)
     {% if is_incremental() %}
-        -- Ne scanner que les lignes plus récentes que le dernier traitement
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(stat_day_time) FROM {{ this }})
+        -- Nous utilisons le nom de la colonne dans la table cible (extract_timestamp)
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
 )
 
 SELECT
-    -- Colonnes finales
-    TIMESTAMP(_fivetran_synced) AS stat_day_time,
-    row_id,
-    dedup_key,
     
-    -- Colonne de l'Industrie enrichie (dim_split)
-    COALESCE(industry_name_enriched, CAST(industry_id AS STRING)) AS dim_split_industry,
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE (Standardisée) **
+    -- ************************************************************
     
-    -- Métriques et autres clés
-    follower_counts_organic_follower_count,
-    follower_counts_paid_follower_count,
-    _organization_entity_urn,
-    industry_id
+    -- 1. URN (Première colonne)
+    s._organization_entity_urn,
+    
+    -- 2. ROW_ID (day_format _ dimension_label)
+    CONCAT(
+        s.day_format, 
+        '_', 
+        COALESCE(s.dim_industry_name_enriched, CAST(s.industry_id AS STRING)) 
+    ) AS row_id,
+    
+    -- 3. extract_timestamp (Renommage depuis extract_timestamp_temp)
+    s.extract_timestamp_temp AS extract_timestamp,
+    
+    -- 4. Dimension (Libellé enrichi)
+    COALESCE(s.dim_industry_name_enriched, CAST(s.industry_id AS STRING)) AS dim_industry,
+    
+    -- 5. Dimension_ID
+    s.industry_id AS dim_industry_id,
+    
+    -- 6. Day (format YYYY-MM-DD)
+    s.day_format AS day,
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS **
+    -- ************************************************************
+    
+    s.follower_counts_organic_follower_count,
+    s.follower_counts_paid_follower_count
     
 FROM 
-    source_data
+    source_data AS s

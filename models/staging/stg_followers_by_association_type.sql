@@ -2,6 +2,7 @@
     config(
         materialized='incremental',
         unique_key='row_id',
+        incremental_strategy='merge',
         on_schema_change='fail'
     )
 }}
@@ -9,43 +10,63 @@
 WITH source_data AS (
 
     SELECT
-        f.* EXCEPT(_fivetran_id), -- On exclut _fivetran_id car nous n'avons plus besoin de dedup_key
-
-        -- Crée la clé analytique (row_id)
-        CONCAT(
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            f.association_type 
-        ) AS row_id
+        -- Colonnes brutes nécessaires (pour la structure et les faits)
+        f._organization_entity_urn,
+        f.association_type,
+        f.follower_counts_organic_follower_count,
+        f.follower_counts_paid_follower_count,
+        f._fivetran_synced,
+        
+        -- Colonnes calculées/renommées
+        f.association_type AS dim_association_type,
+        TIMESTAMP(f._fivetran_synced) AS extract_timestamp_temp, 
+        CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYY-MM-DD') AS day_format
         
     FROM 
-        -- Source de faits
         {{ source('fivetran_linkedin', 'followers_by_association_type') }} AS f
         
     -- FILTRE D'OPTIMISATION (Incrémentalité)
     {% if is_incremental() %}
-        -- Ne scanner que les lignes plus récentes que le dernier traitement
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(stat_day_time) FROM {{ this }})
+        -- Nous utilisons le nom de la colonne dans la table cible (extract_timestamp)
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
 )
 
 SELECT
-    -- 1. Clé Analytique
-    row_id,
     
-    -- 2. Colonne de Temps
-    TIMESTAMP(_fivetran_synced) AS stat_day_time,
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE **
+    -- ************************************************************
     
-    -- 3. Dimension (Type d'Association - pas besoin de COALESCE car c'est un STRING du source)
-    association_type AS dim_split_association_type,
+    -- 1. URN (Première colonne)
+    s._organization_entity_urn,
     
-    -- 4. Métriques
-    follower_counts_organic_follower_count,
-    follower_counts_paid_follower_count,
+    -- 2. ROW_ID (day_format _ dimension_label)
+    CONCAT(
+        s.day_format, 
+        '_', 
+        s.dim_association_type 
+    ) AS row_id,
     
-    -- 5. URN de l'Organisation (Clé de la page)
-    _organization_entity_urn
+    -- 3. extract_timestamp (Renommage depuis extract_timestamp_temp)
+    s.extract_timestamp_temp AS extract_timestamp,
+    
+    -- 4. Dimension (Libellé)
+    s.dim_association_type,
+    
+    -- 5. Dimension_ID (Non disponible / Non pertinent)
+    CAST(NULL AS STRING) AS dim_association_type_id,
+    
+    -- 6. Day (format YYYY-MM-DD)
+    s.day_format AS day,
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS **
+    -- ************************************************************
+    
+    s.follower_counts_organic_follower_count,
+    s.follower_counts_paid_follower_count
     
 FROM 
-    source_data
+    source_data AS s

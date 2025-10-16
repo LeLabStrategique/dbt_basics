@@ -2,6 +2,7 @@
     config(
         materialized='incremental',
         unique_key='row_id',
+        incremental_strategy='merge',
         on_schema_change='fail'
     )
 }}
@@ -9,59 +10,71 @@
 WITH source_data AS (
 
     SELECT
-        f.*,
-        -- Jointure sur la table de dimension 'function'
-        d.name AS function_name_enriched,
+        -- Colonnes brutes nécessaires (pour la structure et les faits)
+        f._organization_entity_urn,
+        f.function_id, -- Clé de la dimension
+        f.follower_counts_organic_follower_count,
+        f.follower_counts_paid_follower_count,
+        f._fivetran_synced, -- Pour l'incrémentalité et le timestamp
         
-        -- Crée la clé analytique (row_id)
-        CONCAT(
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            -- Utilise le nom de la fonction, sinon l'ID brut
-            COALESCE(d.name, CAST(f.function_id AS STRING)) 
-        ) AS row_id,
+        -- Colonne de dimension enrichie (nom de la fonction)
+        d.name AS dim_function_name_enriched,
         
-        -- Clé de traçabilité Fivetran (Conservée ici pour le traçage, mais non sélectionnée dans le SELECT final)
-        CONCAT(CAST(f._fivetran_id AS STRING), '§', CAST(TIMESTAMP(f._fivetran_synced) AS STRING)) AS dedup_key
+        -- Colonnes calculées/renommées
+        TIMESTAMP(f._fivetran_synced) AS stat_day_time, 
+        CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYY-MM-DD') AS day_format
         
     FROM 
         -- Source de faits
         {{ source('fivetran_linkedin', 'followers_by_function') }} AS f
         
     LEFT JOIN
-        -- Source de dimension
+        -- Source de dimension (pour enrichir l'ID)
         {{ source('fivetran_linkedin', 'function') }} AS d
         ON CAST(d.id AS STRING) = CAST(f.function_id AS STRING)
         
     -- FILTRE D'OPTIMISATION (Incrémentalité)
     {% if is_incremental() %}
-        -- Ne scanner que les lignes plus récentes que le dernier traitement
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(stat_day_time) FROM {{ this }})
+        -- Utilisation de 'extract_timestamp' qui sera le nom de la colonne dans la table cible
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
 )
 
 SELECT
-    -- 1. Clé Analytique
-    row_id,
     
-    -- 2. Colonne de Temps
-    TIMESTAMP(_fivetran_synced) AS stat_day_time,
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE **
+    -- ************************************************************
     
-    -- 3. Clé de Dimension
-    function_id,
+    -- 1. URN (Première colonne)
+    s._organization_entity_urn,
     
-    -- 4. Libellé de Dimension enrichi
-    COALESCE(function_name_enriched, CAST(function_id AS STRING)) AS dim_split_function,
+    -- 2. ROW_ID (day_format _ dimension_label)
+    CONCAT(
+        s.day_format, 
+        '_', 
+        COALESCE(s.dim_function_name_enriched, CAST(s.function_id AS STRING)) 
+    ) AS row_id,
     
-    -- 5. Métriques
-    follower_counts_organic_follower_count,
-    follower_counts_paid_follower_count,
+    -- 3. extract_timestamp (Renommage de stat_day_time)
+    s.stat_day_time AS extract_timestamp,
     
-    -- 6. URN de l'Organisation (Clé de la page)
-    _organization_entity_urn
+    -- 4. Dimension (Libellé enrichi)
+    COALESCE(s.dim_function_name_enriched, CAST(s.function_id AS STRING)) AS dim_function,
     
-    -- La colonne dedup_key n'est plus présente ici, elle est retirée de la sortie finale.
+    -- 5. Dimension_ID
+    s.function_id AS dim_function_id,
+    
+    -- 6. Day (format YYYY-MM-DD)
+    s.day_format AS day,
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS **
+    -- ************************************************************
+    
+    s.follower_counts_organic_follower_count,
+    s.follower_counts_paid_follower_count -- <-- CORRECTION APPLIQUÉE : PAS DE VIRGULE ICI
     
 FROM 
-    source_data
+    source_data AS s

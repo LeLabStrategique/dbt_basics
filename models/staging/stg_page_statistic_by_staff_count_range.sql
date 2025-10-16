@@ -10,75 +10,132 @@
 WITH source_data AS (
 
     SELECT
-        f.* EXCEPT(_fivetran_id),
+        -- Colonnes de la source f (explicites, remplacement de f.* EXCEPT)
+        f._organization_entity_urn,
+        f.staff_count_range, -- Clé de la dimension
+        f._fivetran_synced,
+        f.all_desktop_page_views,
+        f.all_mobile_page_views,
+        f.all_page_views,
+        f.about_page_views,
+        f.careers_page_views,
+        f.products_page_views,
+        f.jobs_page_views,
+        f.people_page_views,
+        f.overview_page_views,
+        f.life_at_page_views,
+        f.insights_page_views,
+        f.mobile_careers_page_views,
+        f.mobile_overview_page_views,
+        f.mobile_jobs_page_views,
+        f.mobile_life_at_page_views,
+        f.mobile_insights_page_views,
+        f.mobile_products_page_views,
+        f.mobile_about_page_views,
+        f.mobile_people_page_views,
+        f.desktop_insights_page_views,
+        f.desktop_careers_page_views,
+        f.desktop_life_at_page_views,
+        f.desktop_jobs_page_views,
+        f.desktop_people_page_views,
+        f.desktop_about_page_views,
+        f.desktop_overview_page_views,
+        f.desktop_products_page_views,
         
-        -- Crée la clé analytique (row_id)
-        CONCAT(
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            f.staff_count_range 
-        ) AS row_id
-
+        -- Colonnes temporelles calculées
+        TIMESTAMP(f._fivetran_synced) AS extract_timestamp_temp,
+        CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYY-MM-DD') AS day_format
+        
     FROM 
         {{ source('fivetran_linkedin', 'page_statistic_by_staff_count_range') }} AS f
 
+    -- FILTRE D'OPTIMISATION (Incrémentalité)
     {% if is_incremental() %}
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(stat_day_time) FROM {{ this }})
+        -- Nous utilisons le nom de la colonne dans la table cible (extract_timestamp)
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
 ),
 
 deduplication AS (
     SELECT
-        *,
+        s.*, -- Sélectionne toutes les colonnes de source_data
         
-        -- Fenêtrage pour conserver la ligne la plus récente pour chaque 'row_id'
+        -- Crée la clé analytique (row_id)
+        CONCAT(
+            s.day_format, 
+            '_', 
+            s.staff_count_range 
+        ) AS row_id,
+
         ROW_NUMBER() OVER (
             PARTITION BY 
-                row_id -- Utilise le row_id déjà créé
-            ORDER BY TIMESTAMP(_fivetran_synced) DESC
+                s.day_format, 
+                s.staff_count_range
+            ORDER BY s.extract_timestamp_temp DESC
         ) AS rank_by_recency
 
     FROM 
-        source_data
+        source_data AS s
 )
 
 SELECT
-    row_id,
-    TIMESTAMP(_fivetran_synced) AS stat_day_time,
-    -- NOUVELLE COLONNE : Extrait la date seule (YYYY-MM-DD)
-    CAST(DATE(TIMESTAMP(_fivetran_synced)) AS DATE) AS day, 
-    staff_count_range AS dim_split_staff_count_range,
-    all_desktop_page_views,
-    all_mobile_page_views,
-    all_page_views,
-    about_page_views,
-    careers_page_views,
-    products_page_views,
-    jobs_page_views,
-    people_page_views,
-    overview_page_views,
-    life_at_page_views,
-    insights_page_views,
-    mobile_careers_page_views,
-    mobile_overview_page_views,
-    mobile_jobs_page_views,
-    mobile_life_at_page_views,
-    mobile_insights_page_views,
-    mobile_products_page_views,
-    mobile_about_page_views,
-    mobile_people_page_views,
-    desktop_insights_page_views,
-    desktop_careers_page_views,
-    desktop_life_at_page_views,
-    desktop_jobs_page_views,
-    desktop_people_page_views,
-    desktop_about_page_views,
-    desktop_overview_page_views,
-    desktop_products_page_views,
-    _organization_entity_urn
+    
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE (Standardisée) **
+    -- ************************************************************
+    
+    -- 1. URN (Première colonne)
+    d._organization_entity_urn,
+    
+    -- 2. ROW_ID
+    d.row_id,
+    
+    -- 3. extract_timestamp (Renommage de l'alias temp)
+    d.extract_timestamp_temp AS extract_timestamp,
+    
+    -- 4. Dimension (Libellé dénormalisé)
+    d.staff_count_range AS dim_staff_count_range,
+    
+    -- 5. Dimension_ID (utilise le libellé comme ID ici)
+    d.staff_count_range AS dim_staff_count_range_id,
+    
+    -- 6. Day (format YYYY-MM-DD)
+    d.day_format AS day,
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS (Métriques de Vues de Page) **
+    -- ************************************************************
+    
+    d.all_desktop_page_views,
+    d.all_mobile_page_views,
+    d.all_page_views,
+    d.about_page_views,
+    d.careers_page_views,
+    d.products_page_views,
+    d.jobs_page_views,
+    d.people_page_views,
+    d.overview_page_views,
+    d.life_at_page_views,
+    d.insights_page_views,
+    d.mobile_careers_page_views,
+    d.mobile_overview_page_views,
+    d.mobile_jobs_page_views,
+    d.mobile_life_at_page_views,
+    d.mobile_insights_page_views,
+    d.mobile_products_page_views,
+    d.mobile_about_page_views,
+    d.mobile_people_page_views,
+    d.desktop_insights_page_views,
+    d.desktop_careers_page_views,
+    d.desktop_life_at_page_views,
+    d.desktop_jobs_page_views,
+    d.desktop_people_page_views,
+    d.desktop_about_page_views,
+    d.desktop_overview_page_views,
+    d.desktop_products_page_views
     
 FROM 
-    deduplication
+    deduplication AS d
 WHERE
-    rank_by_recency = 1
+    d.rank_by_recency = 1

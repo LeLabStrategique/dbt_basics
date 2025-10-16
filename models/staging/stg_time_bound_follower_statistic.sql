@@ -1,7 +1,7 @@
 {{
     config(
         materialized='incremental',
-        unique_key='DIM_SPLIT_day', 
+        unique_key='day', 
         incremental_strategy='merge', 
         on_schema_change='fail'
     )
@@ -10,56 +10,89 @@
 WITH source_data AS (
 
     SELECT
-        -- Exclure les colonnes source non désirées ou renommées (day et organization_entity)
-        f.* EXCEPT(_fivetran_id, day, organization_entity), 
+        -- Colonnes de la source f (explicites)
+        f.organization_entity, -- URN brut
+        f.day AS day_raw_timestamp, 
+        f._fivetran_synced,
         
-        -- Clé de temps : Stat_Day_Time (le _fivetran_synced)
-        TIMESTAMP(f._fivetran_synced) AS Stat_Day_Time,
+        -- Colonnes de FAITS (GAINS)
+        f.follower_gains_organic_follower_gain, 
+        f.follower_gains_paid_follower_gain,
         
-        -- DIM_SPLIT_day format YYYY-MM-DD
-        CAST(DATE(f.day) AS STRING FORMAT 'YYYY-MM-DD') AS DIM_SPLIT_day,
-        
-        -- Renommer l'URN pour la traçabilité
-        f.organization_entity AS organization_entity_raw,
-        
-        -- Construction du ROW_ID: YYYYMMDD(Stat_Day_Time) - YYYYMMDD(DIM_SPLIT_day)
-        CONCAT(
-            -- YYYYMMDD du Stat_Day_Time
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            -- YYYYMMDD du DIM_SPLIT_day (conversion temporaire pour le ROW_ID)
-            CAST(DATE(f.day) AS STRING FORMAT 'YYYYMMDD')
-        ) AS row_id
+        -- Colonnes temporelles calculées
+        TIMESTAMP(f._fivetran_synced) AS extract_timestamp_temp, 
+        CAST(f.day AS DATE) AS day_format,
+        CAST(DATE(f.day) AS STRING FORMAT 'YYYY-MM-DD') AS day_format_string
         
     FROM 
         {{ source('fivetran_linkedin', 'time_bound_follower_statistic') }} AS f
 
     {% if is_incremental() %}
-        -- Le filtre reste Stat_Day_Time
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(Stat_Day_Time) FROM {{ this }})
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
+),
+
+deduplication AS (
+    SELECT
+        -- Sélection explicite des colonnes nécessaires pour le SELECT final
+        s.organization_entity, -- *** INCLUS MAINTENANT ***
+        s.day_raw_timestamp,
+        s.extract_timestamp_temp,
+        s.day_format,
+        s.day_format_string,
+        s.follower_gains_organic_follower_gain, 
+        s.follower_gains_paid_follower_gain,
+        
+        -- Construction de la clé analytique (row_id)
+        CONCAT(
+            CAST(DATE(s.extract_timestamp_temp) AS STRING FORMAT 'YYYY-MM-DD'), 
+            '_', 
+            s.day_format_string
+        ) AS row_id,
+
+        ROW_NUMBER() OVER (
+            PARTITION BY 
+                s.day_format
+            ORDER BY s.extract_timestamp_temp DESC
+        ) AS rank_by_recency
+
+    FROM 
+        source_data AS s
 )
 
 SELECT
-    -- 1. Clé analytique
-    t.row_id,
     
-    -- 2. Colonne de temps (Stat_Day_Time)
-    t.Stat_Day_Time,
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE **
+    -- ************************************************************
     
-    -- 3. Dimension clé (YYYY-MM-DD)
-    t.DIM_SPLIT_day,
-
-    -- 4. Toutes les autres colonnes (métriques)
-    t.* EXCEPT(Stat_Day_Time, DIM_SPLIT_day, row_id, organization_entity_raw),
+    -- 1. URN (Renommage final)
+    d.organization_entity AS _organization_entity_urn,
     
-    -- 5. URN de l'Organisation (Renommage final)
-    t.organization_entity_raw AS _organization_entity_urn
-
+    -- 2. ROW_ID
+    d.row_id,
+    
+    -- 3. TIMESTAMP de la synchro
+    d.extract_timestamp_temp AS extract_timestamp,
+    
+    -- 4. DIM_DAY (TIMESTAMP brut du jour d'agrégation)
+    d.day_raw_timestamp AS dim_day, 
+    
+    -- 5. DIM_DAY_ID
+    CAST(NULL AS STRING) AS dim_day_id, 
+    
+    -- 6. DAY (Date d'agrégation au format YYYY-MM-DD)
+    d.day_format AS day, 
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS (Métriques de GAINS) **
+    -- ************************************************************
+    
+    d.follower_gains_organic_follower_gain,
+    d.follower_gains_paid_follower_gain
+    
 FROM 
-    source_data AS t
-QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY t.DIM_SPLIT_day
-    ORDER BY t.Stat_Day_Time DESC
-) = 1
+    deduplication AS d
+WHERE
+    d.rank_by_recency = 1

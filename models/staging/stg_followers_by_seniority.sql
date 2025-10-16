@@ -2,6 +2,7 @@
     config(
         materialized='incremental',
         unique_key='row_id',
+        incremental_strategy='merge',
         on_schema_change='fail'
     )
 }}
@@ -9,54 +10,72 @@
 WITH source_data AS (
 
     SELECT
-        f.*,
-        -- Jointure sur la table de dimension 'seniority'
-        d.name AS seniority_name_enriched,
+        -- Colonnes brutes nécessaires (pour la structure et les faits)
+        f._organization_entity_urn,
+        f.seniority_id, -- Clé de la dimension
+        f.follower_counts_organic_follower_count,
+        f.follower_counts_paid_follower_count,
+        f._fivetran_synced, -- Pour l'incrémentalité et le timestamp
         
-        -- Crée la clé analytique (row_id)
-        CONCAT(
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            -- Utilise l'ID de séniorité du champ original 'seniority' s'il existe
-            COALESCE(d.name, CAST(f.seniority_id AS STRING)) 
-        ) AS row_id,
+        -- Colonne de dimension enrichie (nom de l'ancienneté)
+        d.name AS dim_seniority_name_enriched,
         
-        -- Clé de traçabilité Fivetran
-        CONCAT(CAST(f._fivetran_id AS STRING), '§', CAST(TIMESTAMP(f._fivetran_synced) AS STRING)) AS dedup_key
+        -- Colonnes calculées/renommées
+        TIMESTAMP(f._fivetran_synced) AS extract_timestamp_temp, -- Utilisé comme source pour 'extract_timestamp'
+        CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYY-MM-DD') AS day_format
         
     FROM 
-        -- RÉFÉRENCE CORRIGÉE : Utilise le nom de source déclaré 'fivetran_linkedin' 
+        -- Source de faits
         {{ source('fivetran_linkedin', 'followers_by_seniority') }} AS f
         
     LEFT JOIN
-        -- RÉFÉRENCE CORRIGÉE : Utilise le nom de source déclaré 'fivetran_linkedin'
+        -- Source de dimension (pour enrichir l'ID d'ancienneté)
         {{ source('fivetran_linkedin', 'seniority') }} AS d
         ON CAST(d.id AS STRING) = CAST(f.seniority_id AS STRING)
         
     -- FILTRE D'OPTIMISATION (Incrémentalité)
     {% if is_incremental() %}
-        -- Ne scanner que les lignes plus récentes que le dernier traitement
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(stat_day_time) FROM {{ this }})
+        -- Nous utilisons le nom de la colonne dans la table cible (extract_timestamp)
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
 )
 
 SELECT
-    -- Colonnes finales
-    TIMESTAMP(_fivetran_synced) AS stat_day_time,
-    row_id,
-    dedup_key,
     
-    -- Colonne de la Séniorité enrichie (dim_split)
-    COALESCE(seniority_name_enriched, CAST(seniority_id AS STRING)) AS dim_split_seniority,
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE **
+    -- ************************************************************
     
-    -- Autres colonnes du Mart
-    follower_counts_organic_follower_count,
-    follower_counts_paid_follower_count,
-    _organization_entity_urn,
-    seniority_id
+    -- 1. URN (Première colonne)
+    s._organization_entity_urn,
     
-    -- NOTE: Ajoutez ici explicitement toutes les autres colonnes brutes que vous voulez conserver.
+    -- 2. ROW_ID (day_format _ dimension_label)
+    CONCAT(
+        s.day_format, 
+        '_', 
+        -- Utilisation du nom enrichi, sinon l'ID brut
+        COALESCE(s.dim_seniority_name_enriched, CAST(s.seniority_id AS STRING)) 
+    ) AS row_id,
+    
+    -- 3. extract_timestamp (Renommage depuis extract_timestamp_temp)
+    s.extract_timestamp_temp AS extract_timestamp,
+    
+    -- 4. Dimension (Libellé enrichi)
+    COALESCE(s.dim_seniority_name_enriched, CAST(s.seniority_id AS STRING)) AS dim_seniority,
+    
+    -- 5. Dimension_ID
+    s.seniority_id AS dim_seniority_id,
+    
+    -- 6. Day (format YYYY-MM-DD)
+    s.day_format AS day,
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS **
+    -- ************************************************************
+    
+    s.follower_counts_organic_follower_count,
+    s.follower_counts_paid_follower_count
     
 FROM 
-    source_data
+    source_data AS s

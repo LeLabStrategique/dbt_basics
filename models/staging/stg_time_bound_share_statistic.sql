@@ -1,7 +1,7 @@
 {{
     config(
         materialized='incremental',
-        unique_key='DIM_SPLIT_day', 
+        unique_key='day', 
         incremental_strategy='merge', 
         on_schema_change='fail'
     )
@@ -10,55 +10,99 @@
 WITH source_data AS (
 
     SELECT
-        -- Exclure _fivetran_id, la colonne 'day' originale et organization_entity
-        f.* EXCEPT(_fivetran_id, day, organization_entity), 
+        -- Colonnes de la source f (explicites)
+        f.organization_entity, -- URN de l'organisation (CONFIRMÉ)
+        f.day AS day_raw_timestamp, -- Timestamp de la date d'agrégation
+        f._fivetran_synced,
         
-        -- Clé de temps (UTILISÉE POUR LA LOGIQUE)
-        TIMESTAMP(f._fivetran_synced) AS Stat_Day_Time,
+        -- Colonnes de FAITS (Métriques de Partage - Noms exacts confirmés)
+        f.engagement,
+        f.unique_impressions_count,
+        f.share_count,
+        f.share_mentions_count,
+        f.click_count,
+        f.like_count,
+        f.impression_count,
+        f.comment_count,
+        f.comment_mentions_count,
         
-        -- DIM_SPLIT_day format YYYY-MM-DD
-        CAST(DATE(f.day) AS STRING FORMAT 'YYYY-MM-DD') AS DIM_SPLIT_day,
-        
-        -- Renommer l'URN pour la traçabilité
-        f.organization_entity AS organization_entity_raw,
-        
-        -- Construction du ROW_ID: YYYYMMDD(Stat_Day_Time) - YYYYMMDD(DIM_SPLIT_day)
-        CONCAT(
-            CAST(DATE(TIMESTAMP(f._fivetran_synced)) AS STRING FORMAT 'YYYYMMDD'), 
-            ' - ', 
-            CAST(DATE(f.day) AS STRING FORMAT 'YYYYMMDD')
-        ) AS row_id
+        -- Colonnes temporelles calculées
+        TIMESTAMP(f._fivetran_synced) AS extract_timestamp_temp, 
+        CAST(f.day AS DATE) AS day_format,
+        CAST(DATE(f.day) AS STRING FORMAT 'YYYY-MM-DD') AS day_format_string
         
     FROM 
         {{ source('fivetran_linkedin', 'time_bound_share_statistic') }} AS f
 
     {% if is_incremental() %}
-        -- Le filtre incrémental doit toujours utiliser Stat_Day_Time
-        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(Stat_Day_Time) FROM {{ this }})
+        -- Utilise le nom de la colonne dans la table cible (extract_timestamp)
+        WHERE TIMESTAMP(f._fivetran_synced) > (SELECT MAX(extract_timestamp) FROM {{ this }})
     {% endif %}
 
+),
+
+deduplication AS (
+    SELECT
+        s.* EXCEPT(day_raw_timestamp), -- Sélectionne tout sauf la colonne brute pour la garder propre
+        s.day_raw_timestamp, -- S'assure que le timestamp brut est réinclus
+        
+        -- Construction de la clé analytique (row_id)
+        CONCAT(
+            CAST(DATE(s.extract_timestamp_temp) AS STRING FORMAT 'YYYY-MM-DD'), 
+            '_', 
+            s.day_format_string
+        ) AS row_id,
+
+        -- Fenêtrage pour conserver la ligne la plus récente pour chaque jour d'agrégation
+        ROW_NUMBER() OVER (
+            PARTITION BY 
+                s.day_format 
+            ORDER BY s.extract_timestamp_temp DESC
+        ) AS rank_by_recency
+
+    FROM 
+        source_data AS s
 )
 
 SELECT
-    -- 1. Clé analytique
-    t.row_id,
     
-    -- 2. Colonne de temps (Stat_Day_Time est exclu du SELECT final)
+    -- ************************************************************
+    -- ** 1. STRUCTURE DE COLONNES DEMANDÉE (Standardisée) **
+    -- ************************************************************
     
-    -- 3. Dimension clé (YYYY-MM-DD)
-    t.DIM_SPLIT_day,
-
-    -- 4. Toutes les autres colonnes (métriques de partage)
-    -- Stat_Day_Time est explicitement retiré du résultat final
-    t.* EXCEPT(Stat_Day_Time, DIM_SPLIT_day, row_id, organization_entity_raw),
+    -- 1. URN (Renommage final)
+    d.organization_entity AS _organization_entity_urn,
     
-    -- 5. URN de l'Organisation (Renommage final)
-    t.organization_entity_raw AS _organization_entity_urn
-
+    -- 2. ROW_ID
+    d.row_id,
+    
+    -- 3. TIMESTAMP de la synchro
+    d.extract_timestamp_temp AS extract_timestamp,
+    
+    -- 4. DIM_DAY (TIMESTAMP brut du jour d'agrégation)
+    d.day_raw_timestamp AS dim_day, 
+    
+    -- 5. DIM_DAY_ID
+    CAST(NULL AS STRING) AS dim_day_id, 
+    
+    -- 6. DAY (Date d'agrégation au format YYYY-MM-DD)
+    d.day_format AS day, 
+    
+    -- ************************************************************
+    -- ** 2. COLONNES DE FAITS (Métriques de Partage) **
+    -- ************************************************************
+    
+    d.engagement,
+    d.unique_impressions_count,
+    d.share_count,
+    d.share_mentions_count,
+    d.click_count,
+    d.like_count,
+    d.impression_count,
+    d.comment_count,
+    d.comment_mentions_count
+    
 FROM 
-    source_data AS t
-QUALIFY ROW_NUMBER() OVER (
-    -- La déduplication se base sur le temps de synchronisation
-    PARTITION BY t.DIM_SPLIT_day
-    ORDER BY t.Stat_Day_Time DESC 
-) = 1
+    deduplication AS d
+WHERE
+    d.rank_by_recency = 1
