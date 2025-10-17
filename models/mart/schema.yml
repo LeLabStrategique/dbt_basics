@@ -1,0 +1,52 @@
+version: 2
+
+models:
+  - name: mrt_posts_statistics # Utilisez 'mrt_posts_statistics' si vous avez renommé le fichier.
+    description: |
+      Mart analytique principal fournissant les statistiques journalières (impressions, likes, etc.) 
+      pour chaque publication LinkedIn. Les posts sont enrichis d'une classification (HR vs Brand) 
+      basée sur les mots-clés du modèle dim_post_category_keyword.
+    config:
+      tags: ['mart', 'posts']
+    columns:
+      - name: stat_day_time
+        description: "Date de la statistique (jour où la donnée a été enregistrée)."
+        tests:
+          - not_null
+      - name: dim_split_post_id
+        description: "Identifiant unique de la publication, réutilisable pour jointure."
+        tests:
+          - unique
+          - not_null
+      - name: post_category
+        description: "Classification de la publication : 'hr posts' (ressources humaines) ou 'brand posts' (marque/produit). Dérivé du titre du post."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['hr posts', 'brand posts']
+      - name: post_intro
+        description: "L'introduction tronquée du post (max 40 caractères), utile pour l'affichage dans les tableaux de bord."
+      - name: post_url
+        description: "URL complète et cliquable du post LinkedIn."
+      - name: post_age
+        description: "Âge de la publication en jours au moment de l'exécution dbt. (CURRENT_DATE() - first_published_at)."
+      - name: engagement
+        description: "Métrique d'engagement total (engagement_count) pour le jour donné."
+      - name: impression_count
+        description: "Nombre total de vues (impressions) pour le post."
+
+  - name: mrt_post_category_intro_summary
+    description: |
+      Vue agrégée (sommaire) des performances des posts, groupée par l'introduction du post (post_intro)
+      et la catégorie (post_category). Utilisé pour identifier rapidement les thèmes performants.
+    config:
+      tags: ['mart', 'summary']
+    columns:
+      - name: post_intro
+        description: "L'introduction du post (la clé d'agrégation)."
+      - name: post_category
+        description: "La catégorie (HR ou Brand)."
+      - name: unique_post_count
+        description: "Nombre de publications distinctes ayant cette même introduction/catégorie."
+        tests:
+          - not_null

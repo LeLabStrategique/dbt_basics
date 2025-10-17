@@ -4,29 +4,47 @@ version: '1.0.0'
 config-version: 2
 profile: 'default'
 
-# ... (model-paths, analysis-paths, etc. restent inchangés) ...
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"  # directory to write compiled SQL files
+clean-targets:         # directories to clean with `dbt clean`
+  - "target"
+  - "dbt_packages"
+
 
 vars:
     # -----------------------------------------------------------------
-    # Configuration des variables sources pour le package Fivetran/LinkedIn (Étape 2)
+    # Configuration des variables sources
     # -----------------------------------------------------------------
-    linkedin_pages_database: dbt-bq-training-473915 # VALEUR STATIQUE CORRECTE
+    linkedin_pages_database: dbt-bq-training-473915
     linkedin_pages_schema: linkedin_company_pages 
 
 models:
   my_new_project:
-    # 1. Configuration de votre PROPRE projet dbt (vos modèles marts)
-    # Nous allons les placer dans un schéma 'analytics' ou 'marts' pour la clarté.
-    +schema: analytics 
     
-    # Configuration par défaut (peut être supprimée si non utilisée)
-    example:
+    # 1. Configuration des modèles de staging (models/staging/*)
+    # Créé dans le dataset : STG_linkedin_company_pages
+    staging:
+      +schema: STG_linkedin_company_pages
+      +materialized: view 
+      
+    # 2. Configuration des modèles Marts (models/mart/*)
+    # Créé dans le dataset : MRT_linkedin_company_pages
+    mart:
+      +schema: MRT_linkedin_company_pages
+      +materialized: table 
+      
+    # 3. Nouvelle Configuration pour les tables de configuration/dimension (models/config/*)
+    # Créé dans le dataset : CONFIG_linkedin_company_pages
+    config:
+      +schema: CONFIG_linkedin_company_pages
       +materialized: table
       
-  linkedin_pages:
-    # 2. Configuration du PACKAGE Fivetran.
-    # On force le staging Fivetran dans un dataset séparé 'fivetran_staging'
-    # pour isoler les transformations Fivetran de votre propre staging.
-    staging:
-      +schema: fivetran_staging
-      +materialized: view # Optionnel, mais recommandé pour économiser le coût BigQuery
+    # Vous pouvez supprimer la section 'example' si elle n'est pas utilisée
+    example:
+      +materialized: table

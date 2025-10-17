@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: dim_post_category_keyword
+    description: |
+      Table de dimension statique utilisée pour classifier les publications LinkedIn. 
+      Elle contient la liste des mots-clés utilisés par le modèle mrt_posts_statistics pour déterminer si un post est lié aux RH (category='HR Posts').
+    config:
+      tags: ['config', 'dimension']
+    columns:
+      - name: keyword
+        description: "Mot-clé spécifique utilisé pour la classification Regex dans le Mart."
+        tests:
+          - unique
+          - not_null
+      - name: category
+        description: "Catégorie métier associée au mot-clé (ex: 'HR Posts')."
+        tests:
+          - not_null
